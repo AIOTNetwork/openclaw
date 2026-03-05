@@ -293,6 +293,17 @@ if ! docker info > /dev/null 2>&1; then
   exit 1
 fi
 
+# Build openclaw:local image if it doesn't exist
+if ! docker image inspect openclaw:local > /dev/null 2>&1; then
+  echo -e "${BLUE}Building openclaw:local Docker image...${NC}"
+  if ! docker build -t openclaw:local -f Dockerfile .; then
+    echo -e "${RED}Error: Failed to build openclaw:local image${NC}"
+    exit 1
+  fi
+  echo -e "${GREEN}✓${NC} Built openclaw:local image"
+  echo
+fi
+
 # Launch with unique project name for isolation
 DOCKER_PROJECT="openclaw-$CONFIG_NAME"
 
