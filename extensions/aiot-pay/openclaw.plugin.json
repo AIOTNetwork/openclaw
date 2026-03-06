@@ -1,0 +1,24 @@
+{
+  "id": "aiot-pay",
+  "name": "AIOT Pay",
+  "description": "Virtual card and payment integration via AIOT Payment Backend + MasterPay Global.",
+  "skills": ["skills/aiot-pay"],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "serverBaseUrl": {
+        "type": "string",
+        "description": "Base URL of the AIOT Payment Backend"
+      },
+      "requestTimeoutMs": {
+        "type": "number",
+        "description": "HTTP request timeout in milliseconds"
+      },
+      "linkTtlDays": {
+        "type": "number",
+        "description": "Days before a third-party channel link expires (default: 7)"
+      }
+    }
+  }
+}
