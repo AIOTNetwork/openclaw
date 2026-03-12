@@ -82,3 +82,7 @@ USER.md
 !.agent/workflows/
 local/
 .plancraft/
+
+# Runtime instance configs (contain secrets)
+config/
+.clawhub/
