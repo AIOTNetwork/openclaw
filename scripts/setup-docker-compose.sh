@@ -58,6 +58,45 @@ if [[ "$INSTANCE_COUNT" -gt 1 ]]; then
   fi
 fi
 
+# ----------------------------------------------------------
+# Multi-instance: collect shared prompts once before the loop
+# ----------------------------------------------------------
+if [[ "$INSTANCE_COUNT" -gt 1 ]]; then
+  echo "Which channel for all instances?"
+  echo "  1) Telegram"
+  echo "  2) Discord"
+  echo "  3) Both"
+  read -p "Choose [1/2/3]: " CHANNEL_CHOICE
+
+  case "$CHANNEL_CHOICE" in
+    1|2|3) ;;
+    *)
+      echo -e "${RED}Invalid channel choice.${NC}"
+      exit 1
+      ;;
+  esac
+  echo
+
+  DISCORD_USER_IDS_RAW=""
+  TELEGRAM_USER_IDS_RAW=""
+
+  if [[ "$CHANNEL_CHOICE" == "2" || "$CHANNEL_CHOICE" == "3" ]]; then
+    read -p "Enter Discord user IDs to pre-authorize (comma-separated): " DISCORD_USER_IDS_RAW
+    if [[ -z "$DISCORD_USER_IDS_RAW" ]]; then
+      echo -e "${RED}Error: At least one Discord user ID is required for multi-instance setup${NC}"
+      exit 1
+    fi
+  fi
+
+  if [[ "$CHANNEL_CHOICE" == "1" || "$CHANNEL_CHOICE" == "3" ]]; then
+    read -p "Enter Telegram user IDs to pre-authorize (comma-separated): " TELEGRAM_USER_IDS_RAW
+    if [[ -z "$TELEGRAM_USER_IDS_RAW" ]]; then
+      echo -e "${RED}Error: At least one Telegram user ID is required for multi-instance setup${NC}"
+      exit 1
+    fi
+  fi
+fi
+
 # Check if Docker is running (once, before the loop)
 if ! docker info > /dev/null 2>&1; then
   echo -e "${RED}Error: Docker is not running. Please start Docker and try again.${NC}"
@@ -221,22 +260,24 @@ for INSTANCE_IDX in $(seq 1 "$INSTANCE_COUNT"); do
   echo
 
   # ----------------------------------------------------------
-  # Channel selection (per instance)
+  # Channel selection (per instance for single, pre-set for multi)
   # ----------------------------------------------------------
-  echo "Which channel?"
-  echo "  1) Telegram"
-  echo "  2) Discord"
-  echo "  3) Both"
-  read -p "Choose [1/2/3]: " CHANNEL_CHOICE
+  if [[ "$INSTANCE_COUNT" -eq 1 ]]; then
+    echo "Which channel?"
+    echo "  1) Telegram"
+    echo "  2) Discord"
+    echo "  3) Both"
+    read -p "Choose [1/2/3]: " CHANNEL_CHOICE
 
-  case "$CHANNEL_CHOICE" in
-    1|2|3) ;;
-    *)
-      echo -e "${RED}Invalid channel choice.${NC}"
-      exit 1
-      ;;
-  esac
-  echo
+    case "$CHANNEL_CHOICE" in
+      1|2|3) ;;
+      *)
+        echo -e "${RED}Invalid channel choice.${NC}"
+        exit 1
+        ;;
+    esac
+    echo
+  fi
 
   # ----------------------------------------------------------
   # Create .env file
@@ -333,6 +374,13 @@ EOF
   # ----------------------------------------------------------
   # Build channel/plugin JSON fragments
   # ----------------------------------------------------------
+  # DM policy: allowlist for multi-instance (pre-authorized), pairing for single
+  if [[ "$INSTANCE_COUNT" -gt 1 ]]; then
+    DM_POLICY="allowlist"
+  else
+    DM_POLICY="pairing"
+  fi
+
   CHANNELS_JSON=""
   PLUGINS_JSON=""
 
@@ -341,7 +389,7 @@ EOF
     CHANNELS_JSON=$(cat <<CEOF
     "telegram": {
       "enabled": true,
-      "dmPolicy": "pairing",
+      "dmPolicy": "$DM_POLICY",
       "botToken": "$TG_BOT_TOKEN",
       "groupPolicy": "allowlist",
       "streamMode": "partial"
@@ -360,7 +408,7 @@ PEOF
     "discord": {
       "enabled": true,
       "token": "$DISCORD_BOT_TOKEN",
-      "dm": { "policy": "pairing" }
+      "dm": { "policy": "$DM_POLICY" }
     }
 CEOF
     )
@@ -375,7 +423,7 @@ PEOF
     CHANNELS_JSON=$(cat <<CEOF
     "telegram": {
       "enabled": true,
-      "dmPolicy": "pairing",
+      "dmPolicy": "$DM_POLICY",
       "botToken": "$TG_BOT_TOKEN",
       "groupPolicy": "allowlist",
       "streamMode": "partial"
@@ -383,7 +431,7 @@ PEOF
     "discord": {
       "enabled": true,
       "token": "$DISCORD_BOT_TOKEN",
-      "dm": { "policy": "pairing" }
+      "dm": { "policy": "$DM_POLICY" }
     }
 CEOF
     )
@@ -472,6 +520,69 @@ EOF
   echo
 
   # ----------------------------------------------------------
+  # Pre-create allowFrom files (multi-instance only)
+  # ----------------------------------------------------------
+  if [[ "$INSTANCE_COUNT" -gt 1 ]]; then
+    CREDENTIALS_DIR="$CONFIG_BASE_DIR/config/credentials"
+    mkdir -p "$CREDENTIALS_DIR"
+
+    if [[ "$CHANNEL_CHOICE" == "2" || "$CHANNEL_CHOICE" == "3" ]]; then
+      # Build JSON array from comma-separated Discord user IDs
+      DISCORD_ALLOW_JSON="["
+      FIRST=true
+      IFS=',' read -ra DISCORD_IDS <<< "$DISCORD_USER_IDS_RAW"
+      for uid in "${DISCORD_IDS[@]}"; do
+        uid=$(echo "$uid" | xargs) # trim whitespace
+        if [[ -n "$uid" ]]; then
+          if [[ "$FIRST" == "true" ]]; then
+            FIRST=false
+          else
+            DISCORD_ALLOW_JSON+=","
+          fi
+          DISCORD_ALLOW_JSON+="\"$uid\""
+        fi
+      done
+      DISCORD_ALLOW_JSON+="]"
+
+      cat > "$CREDENTIALS_DIR/discord-allowFrom.json" <<AFEOF
+{
+  "version": 1,
+  "allowFrom": $DISCORD_ALLOW_JSON
+}
+AFEOF
+      echo -e "${GREEN}✓${NC} Created discord-allowFrom.json with pre-authorized users"
+    fi
+
+    if [[ "$CHANNEL_CHOICE" == "1" || "$CHANNEL_CHOICE" == "3" ]]; then
+      # Build JSON array from comma-separated Telegram user IDs
+      TELEGRAM_ALLOW_JSON="["
+      FIRST=true
+      IFS=',' read -ra TELEGRAM_IDS <<< "$TELEGRAM_USER_IDS_RAW"
+      for uid in "${TELEGRAM_IDS[@]}"; do
+        uid=$(echo "$uid" | xargs) # trim whitespace
+        if [[ -n "$uid" ]]; then
+          if [[ "$FIRST" == "true" ]]; then
+            FIRST=false
+          else
+            TELEGRAM_ALLOW_JSON+=","
+          fi
+          TELEGRAM_ALLOW_JSON+="\"$uid\""
+        fi
+      done
+      TELEGRAM_ALLOW_JSON+="]"
+
+      cat > "$CREDENTIALS_DIR/telegram-allowFrom.json" <<AFEOF
+{
+  "version": 1,
+  "allowFrom": $TELEGRAM_ALLOW_JSON
+}
+AFEOF
+      echo -e "${GREEN}✓${NC} Created telegram-allowFrom.json with pre-authorized users"
+    fi
+    echo
+  fi
+
+  # ----------------------------------------------------------
   # Launch Docker Compose
   # ----------------------------------------------------------
   echo -e "${BLUE}Starting Docker containers...${NC}"
@@ -500,102 +611,195 @@ EOF
   # ----------------------------------------------------------
   # Device Pairing Flow
   # ----------------------------------------------------------
-  echo -e "${BLUE}Device Pairing Instructions:${NC}"
-  echo -e "1. Your Gateway Token: ${GREEN}$AUTH_TOKEN${NC}"
-  echo "2. Opening gateway overview page in your browser..."
-  echo "3. On the page, paste the token above as 'Gateway Token' and tap 'Connect'"
-  echo
-
-  # Open browser
-  if open "http://127.0.0.1:$GATEWAY_PORT/overview" 2>/dev/null; then
-    sleep 1
-  else
-    echo "Please open: http://127.0.0.1:$GATEWAY_PORT/overview"
-  fi
-
-  # Poll for device pairing requests
-  echo "Waiting for device pairing request..."
-  PENDING_FILE="$CONFIG_BASE_DIR/config/devices/pending.json"
   DOCKER_CMD="docker compose --env-file $ENV_FILE -p $DOCKER_PROJECT exec"
-  REQUEST_ID=""
 
-  while [ -z "$REQUEST_ID" ]; do
-    sleep 2
+  if [[ "$INSTANCE_COUNT" -eq 1 ]]; then
+    # --- Single-instance: interactive device pairing ---
+    echo -e "${BLUE}Device Pairing Instructions:${NC}"
+    echo -e "1. Your Gateway Token: ${GREEN}$AUTH_TOKEN${NC}"
+    echo "2. Opening gateway overview page in your browser..."
+    echo "3. On the page, paste the token above as 'Gateway Token' and tap 'Connect'"
+    echo
 
-    if [ -f "$PENDING_FILE" ] && [ -s "$PENDING_FILE" ]; then
-      REQUEST_ID=$(grep -Eo '"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"' "$PENDING_FILE" | head -1 | tr -d '"')
+    # Open browser
+    if open "http://127.0.0.1:$GATEWAY_PORT/overview" 2>/dev/null; then
+      sleep 1
+    else
+      echo "Please open: http://127.0.0.1:$GATEWAY_PORT/overview"
+    fi
 
-      if [ -n "$REQUEST_ID" ]; then
-        echo -e "${GREEN}✓${NC} Device pairing request received: $REQUEST_ID"
+    # Poll for device pairing requests
+    echo "Waiting for device pairing request..."
+    PENDING_FILE="$CONFIG_BASE_DIR/config/devices/pending.json"
+    REQUEST_ID=""
+
+    while [ -z "$REQUEST_ID" ]; do
+      sleep 2
+
+      if [ -f "$PENDING_FILE" ] && [ -s "$PENDING_FILE" ]; then
+        REQUEST_ID=$(grep -Eo '"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"' "$PENDING_FILE" | head -1 | tr -d '"')
+
+        if [ -n "$REQUEST_ID" ]; then
+          echo -e "${GREEN}✓${NC} Device pairing request received: $REQUEST_ID"
+        fi
+      else
+        echo -n "."
       fi
+    done
+
+    echo
+
+    # Auto-approve the device
+    echo "Approving device pairing request..."
+    if $DOCKER_CMD openclaw-gateway node dist/index.js devices approve "$REQUEST_ID"; then
+      echo -e "${GREEN}✓${NC} Device paired successfully!"
     else
-      echo -n "."
+      echo -e "${RED}Error: Failed to approve device${NC}"
+      exit 1
     fi
-  done
 
-  echo
+    # ----------------------------------------------------------
+    # Channel Pairing Flow (single-instance only)
+    # ----------------------------------------------------------
+    echo
 
-  # Auto-approve the device
-  echo "Approving device pairing request..."
-  if $DOCKER_CMD openclaw-gateway node dist/index.js devices approve "$REQUEST_ID"; then
-    echo -e "${GREEN}✓${NC} Device paired successfully!"
+    # Telegram pairing
+    if [[ "$CHANNEL_CHOICE" == "1" || "$CHANNEL_CHOICE" == "3" ]]; then
+      echo -e "${BLUE}Telegram Bot Pairing:${NC}"
+      echo "1. Open Telegram and find your bot"
+      echo "2. Send /start to the bot"
+      echo "3. You will receive a pairing code"
+      echo
+
+      read -p "Enter the pairing code from Telegram: " TG_PAIRING_CODE
+
+      if [[ -z "$TG_PAIRING_CODE" ]]; then
+        echo -e "${RED}Error: Pairing code cannot be empty${NC}"
+        exit 1
+      fi
+
+      echo "Approving Telegram pairing..."
+      if $DOCKER_CMD openclaw-gateway node dist/index.js pairing approve telegram "$TG_PAIRING_CODE"; then
+        echo -e "${GREEN}✓${NC} Telegram bot paired successfully!"
+      else
+        echo -e "${RED}Error: Failed to approve Telegram pairing${NC}"
+        exit 1
+      fi
+      echo
+    fi
+
+    # Discord pairing
+    if [[ "$CHANNEL_CHOICE" == "2" || "$CHANNEL_CHOICE" == "3" ]]; then
+      echo -e "${BLUE}Discord Bot Pairing:${NC}"
+      echo "1. Open Discord and find your bot"
+      echo "2. Send a DM to the bot"
+      echo "3. You will receive a pairing code"
+      echo
+
+      read -p "Enter the pairing code from Discord: " DISCORD_PAIRING_CODE
+
+      if [[ -z "$DISCORD_PAIRING_CODE" ]]; then
+        echo -e "${RED}Error: Pairing code cannot be empty${NC}"
+        exit 1
+      fi
+
+      echo "Approving Discord pairing..."
+      if $DOCKER_CMD openclaw-gateway node dist/index.js pairing approve discord "$DISCORD_PAIRING_CODE"; then
+        echo -e "${GREEN}✓${NC} Discord bot paired successfully!"
+      else
+        echo -e "${RED}Error: Failed to approve Discord pairing${NC}"
+        exit 1
+      fi
+      echo
+    fi
   else
-    echo -e "${RED}Error: Failed to approve device${NC}"
-    exit 1
-  fi
+    # --- Multi-instance: automatic device pairing via localhost ---
+    echo -e "${BLUE}Auto-pairing device for instance $INSTANCE_IDX...${NC}"
 
-  # ----------------------------------------------------------
-  # Channel Pairing Flow (conditional on channel choice)
-  # ----------------------------------------------------------
-  echo
+    # Write a temporary Node.js script to the config dir (mounted inside container)
+    AUTO_PAIR_SCRIPT="$CONFIG_BASE_DIR/config/.auto-pair.js"
+    cat > "$AUTO_PAIR_SCRIPT" << 'APEOF'
+const crypto = require("crypto");
+const WebSocket = require("ws");
+const AUTH_TOKEN = process.env.OPENCLAW_GATEWAY_TOKEN;
 
-  # Telegram pairing
-  if [[ "$CHANNEL_CHOICE" == "1" || "$CHANNEL_CHOICE" == "3" ]]; then
-    echo -e "${BLUE}Telegram Bot Pairing:${NC}"
-    echo "1. Open Telegram and find your bot"
-    echo "2. Send /start to the bot"
-    echo "3. You will receive a pairing code"
-    echo
+// Generate Ed25519 key pair for device identity
+const { publicKey, privateKey } = crypto.generateKeyPairSync("ed25519");
+const spki = publicKey.export({ type: "spki", format: "der" });
+const PREFIX = Buffer.from("302a300506032b6570032100", "hex");
+const rawKey = spki.subarray(PREFIX.length);
+const deviceId = crypto.createHash("sha256").update(rawKey).digest("hex");
 
-    read -p "Enter the pairing code from Telegram: " TG_PAIRING_CODE
+function b64url(buf) {
+  return buf.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+const publicKeyB64 = b64url(rawKey);
+const signedAt = Date.now();
 
-    if [[ -z "$TG_PAIRING_CODE" ]]; then
-      echo -e "${RED}Error: Pairing code cannot be empty${NC}"
-      exit 1
-    fi
+// Build v1 auth payload (no nonce needed for localhost)
+const payload = ["v1", deviceId, "cli", "cli", "operator", "operator.admin", String(signedAt), AUTH_TOKEN].join("|");
+const signature = b64url(crypto.sign(null, Buffer.from(payload, "utf8"), privateKey));
 
-    echo "Approving Telegram pairing..."
-    if $DOCKER_CMD openclaw-gateway node dist/index.js pairing approve telegram "$TG_PAIRING_CODE"; then
-      echo -e "${GREEN}✓${NC} Telegram bot paired successfully!"
+let attempts = 0;
+function tryConnect() {
+  attempts++;
+  const ws = new WebSocket("ws://127.0.0.1:18789");
+  const timeout = setTimeout(() => { try { ws.close(); } catch {} }, 10000);
+
+  ws.on("open", () => {
+    ws.send(JSON.stringify({
+      type: "req",
+      id: "1",
+      method: "connect",
+      params: {
+        minProtocol: 3,
+        maxProtocol: 3,
+        client: { id: "cli", version: "1.0.0", platform: "linux", mode: "cli" },
+        role: "operator",
+        device: { id: deviceId, publicKey: publicKeyB64, signature, signedAt },
+        auth: { token: AUTH_TOKEN },
+      },
+    }));
+  });
+
+  ws.on("message", (data) => {
+    const msg = JSON.parse(data.toString());
+    if (msg.type === "res" && msg.ok) {
+      clearTimeout(timeout);
+      console.log("ok");
+      ws.close();
+      process.exit(0);
+    } else if (msg.type === "res" && !msg.ok) {
+      clearTimeout(timeout);
+      console.error("error:" + JSON.stringify(msg.error));
+      ws.close();
+      process.exit(1);
+    }
+  });
+
+  ws.on("error", () => {
+    clearTimeout(timeout);
+    if (attempts < 15) {
+      setTimeout(tryConnect, 2000);
+    } else {
+      console.error("error:timeout");
+      process.exit(1);
+    }
+  });
+}
+tryConnect();
+APEOF
+
+    # Run the auto-pair script inside the gateway container (localhost → silent auto-approve)
+    if $DOCKER_CMD openclaw-gateway node /home/node/.openclaw/.auto-pair.js; then
+      echo -e "${GREEN}✓${NC} Device auto-paired for instance $INSTANCE_IDX"
     else
-      echo -e "${RED}Error: Failed to approve Telegram pairing${NC}"
-      exit 1
-    fi
-    echo
-  fi
-
-  # Discord pairing
-  if [[ "$CHANNEL_CHOICE" == "2" || "$CHANNEL_CHOICE" == "3" ]]; then
-    echo -e "${BLUE}Discord Bot Pairing:${NC}"
-    echo "1. Open Discord and find your bot"
-    echo "2. Send a DM to the bot"
-    echo "3. You will receive a pairing code"
-    echo
-
-    read -p "Enter the pairing code from Discord: " DISCORD_PAIRING_CODE
-
-    if [[ -z "$DISCORD_PAIRING_CODE" ]]; then
-      echo -e "${RED}Error: Pairing code cannot be empty${NC}"
-      exit 1
+      echo -e "${RED}Error: Failed to auto-pair device for instance $INSTANCE_IDX${NC}"
+      echo "You can manually pair later using: docker compose -p $DOCKER_PROJECT exec openclaw-gateway node dist/index.js devices list"
     fi
 
-    echo "Approving Discord pairing..."
-    if $DOCKER_CMD openclaw-gateway node dist/index.js pairing approve discord "$DISCORD_PAIRING_CODE"; then
-      echo -e "${GREEN}✓${NC} Discord bot paired successfully!"
-    else
-      echo -e "${RED}Error: Failed to approve Discord pairing${NC}"
-      exit 1
-    fi
+    # Clean up temp script
+    rm -f "$AUTO_PAIR_SCRIPT"
     echo
   fi
 
